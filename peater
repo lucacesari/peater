@@ -1,0 +1,216 @@
+#!/bin/bash
+
+# --------------------------------------------------
+# Copyright (c) 2011 Luca Cesari
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of 
+# this software and associated documentation files (the "Software"), to deal in 
+# the Software without restriction, including without limitation the rights to use, 
+# copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the 
+# Software, and to permit persons to whom the Software is furnished to do so, 
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all 
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, 
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR 
+# PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE 
+# FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, 
+# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# --------------------------------------------------
+
+# --------------------------------------------------
+# A simple bash script for backup the installed packages name on a list 
+# and restore them back from it
+#
+# Author: Luca Cesari <mirshann@freakmind.org>
+# --------------------------------------------------
+
+
+SCRIPT_PATH=$(readlink -f $0)
+SCRIPT_NAME=$(basename $SCRIPT_PATH)
+SCRIPT_VERSION='0.1'
+
+AUR_HELPER='packer'
+PKG_MANAGER='pacman'
+
+# requirements checks
+hash $PKG_MANAGER 2>&- || { echo >&2 "I require \"$PKG_MANAGER\" but it's not installed.  Please install it and retry."; exit 1; }
+hash $AUR_HELPER 2>&- || { echo >&2 "I require \"$AUR_HELPER\" but it's not installed.  Please install it and retry."; exit 1; }
+
+
+ARGS=("$@")
+ARGS_LENGTH=${#ARGS[@]}
+
+function pkg_restore
+{
+    local LIST_PATH=$(readlink -f ${ARGS[1]})
+    local LIST_NAME=$(basename $LIST_PATH)
+    local LIST_DIRNAME=`dirname $LIST_PATH`
+
+    local LIST_EXT=${LIST_NAME##*.}
+    local LIST_BASENAME=`basename $LIST_NAME .$LIST_EXT`
+
+    local CUSTOM_SCRIPT=$LIST_DIRNAME/$LIST_BASENAME.sh
+
+    local REPO=$(cat $LIST_PATH | grep -v aur/)
+    local AUR=$(cat $LIST_PATH | grep aur/ | sed 's/aur\///g' )
+    local INSTALLED=$(pacman -Qq)
+
+    # check for installed packages
+    REPO=$(comm -23 <(echo -n "$REPO") <(echo -n "$INSTALLED"))
+    AUR=$(comm -23 <(echo -n "$AUR") <(echo -n "$INSTALLED"))
+
+    if [ "$REPO" ];
+    then
+        echo "Installing Trusted Repositories' packages..."
+        echo "Executing command: sudo $PKG_MANAGER -S $REPO"
+
+        sudo $PKG_MANAGER -S $REPO 
+    fi
+
+    if [ "$AUR" ];
+    then
+        echo "Installing AUR packages..."
+        echo "Executing command: $AUR_HELPER -S" $AUR
+
+        $AUR_HELPER -S $AUR
+    fi
+
+    if [ -e $CUSTOM_SCRIPT ];
+    then
+        echo "Running custom script..."
+        source $CUSTOMSCRIPT
+    fi
+
+    echo "Restore finished"
+}
+
+function pkg_save
+{
+    local FILE=${ARGS[1]}
+    local PATTERN=''
+    local REPO=''
+    local AUR=''
+
+    for ((i=2;i<$ARGS_LENGTH;i++)); 
+    do
+        PATTERN=${ARGS[${i}]}
+        echo -n "Save list of all package containing $PATTERN..."
+        
+        # list all packages installed explicitly but not present in aur
+        AUR=$($PKG_MANAGER -Qmq | grep $PATTERN)
+        REPO=$(comm -23 <($PKG_MANAGER -Qeq | grep $PATTERN) <(echo -n "$AUR"))
+
+        for pkg in $REPO
+        do
+            echo $pkg >> $FILE
+        done
+
+        for pkg in $AUR
+        do
+            echo "aur/$pkg" >> $FILE
+        done
+        
+        echo "Done"
+    done
+
+    # remove dups
+    local PKG=`sort -u <(cat $FILE)`
+    rm $FILE
+    for pkg in $PKG
+    do
+        echo "$pkg" >> $FILE
+    done
+}
+
+function pkg_saveall
+{
+    echo -n "Save list of all installed packages..."
+
+    local FILE="system-$(/bin/date +%Y-%m-%d_%H:%M:%S).pkglist"
+
+    if [ "$ARGS_LENGTH" -ge "2" ];
+    then
+        FILE=${ARGS[1]}
+        if [ -e $FILE ]; 
+        then
+            printf "\n\nList %s is yet present.\nDo you want delete it? (y/n) " $FILE
+            read $answer
+            if [ "$answer"="y" ];
+            then
+                rm $FILE 
+                printf "Delete previous version of %s.\n\n" $FILE
+            else
+                echo "Abort."
+            fi
+        fi
+    fi
+   
+    # list all packages installed explicitly but not present in aur
+    local AUR=$($PKG_MANAGER -Qmq)
+    local REPO=$(comm -23 <($PKG_MANAGER -Qeq) <(echo -n $AUR) )
+
+    for pkg in $REPO
+    do
+        echo $pkg >> $FILE
+    done
+
+    for pkg in $AUR
+    do
+        echo "aur/$pkg" >> $FILE
+    done
+
+    echo "Done"
+}
+
+function printversion
+{
+    echo "$SCRIPT_NAME version $SCRIPT_VERSION"
+}
+
+function printhelp 
+{
+        printversion
+        echo "---------------"
+        echo ""
+
+        echo "Usage: $SCRIPT_NAME OPTION"
+        echo ""
+        echo "Accepted options:"
+        echo " -sa | --saveall [FILE]: save all packages"
+        echo " -s  | --save FILE PATTERN: save the packges with the PATTERN"
+        echo " -r  | --restore FILE:  restore the packages in the input FILE"
+        echo " -v  | --version: print version"
+        echo " -h  | --help:    print this help"
+        echo ""
+
+        echo "---------------"
+        echo "Author: Luca Cesari <mirshann@freakmind.org>"
+
+}
+
+case $1 in
+     '-sa' | '--saveall' )
+         pkg_saveall
+         ;;
+     '-s' | '--save' )
+         [[ "$ARGS_LENGTH" -lt "3" ]] && printf "Missing arguments.\n\n" && printhelp && exit 1
+         pkg_save
+         ;;
+     '-r' | '--restore' )
+         [[ "$ARGS_LENGTH" -lt "2" ]] && printf "Missing arguments.\n\n" && printhelp && exit 1
+         pkg_restore
+         ;;
+     '-v' | '--version' )
+         printversion
+         ;;
+     '-h' | '--help' )
+         printhelp
+         ;;
+     * )
+         printhelp
+         ;;
+ esac
+
